@@ -1,6 +1,8 @@
 import customtkinter as ctk
 from tkintermapview import TkinterMapView
 import osmnx as ox
+import geopandas as gpd
+import pandas as pd
 from pathlib import Path
 import time
 from algorithms import find_route_via_station
@@ -20,6 +22,18 @@ class MunichNavigationApp(ctk.CTk):
         self.center_lon = 11.5754
         self.graph_cache_file = "cache/munich_drive.graphml"
         self.station_cache_file = "cache/munich_station_nodes_citywide.json"
+        self.boundary_cache_file = "cache/munich_neighbor_boundaries.geojson"
+        self.boundary_places = [
+            "Munich, Bavaria, Germany",
+            "Dachau, Bavaria, Germany",
+            "Freising, Bavaria, Germany",
+            "Erding, Bavaria, Germany",
+            "Fürstenfeldbruck, Bavaria, Germany",
+            "Starnberg, Bavaria, Germany",
+            "Germering, Bavaria, Germany",
+            "Ottobrunn, Bavaria, Germany",
+            "Unterhaching, Bavaria, Germany",
+        ]
 
         # Khởi tạo dữ liệu
         self.start_node = None
@@ -30,6 +44,7 @@ class MunichNavigationApp(ctk.CTk):
         self.station_path_lines = []
         self.station_markers = []
         self.station_nodes = []
+        self.boundary_lines = []
         
         print("Đang tải dữ liệu bản đồ toàn thành phố Munich...")
         self.G = self._load_city_graph()
@@ -53,6 +68,10 @@ class MunichNavigationApp(ctk.CTk):
         self.map_widget.grid(row=0, column=0, sticky="nsew")
         self.map_widget.set_position(self.center_lat, self.center_lon) # Tọa độ Munich
         self.map_widget.set_zoom(15)
+
+        print("Đang tải ranh giới Munich và các thành phố lân cận...")
+        self._draw_neighbor_boundaries()
+        print("Đã hiển thị ranh giới hành chính.")
 
         # Chuột phải để chọn điểm
         self.map_widget.add_right_click_menu_command(label="Choose a starting point", command=self.set_start, pass_coords=True)
@@ -88,6 +107,128 @@ class MunichNavigationApp(ctk.CTk):
         self.lbl_time.pack(fill="x")
         self.lbl_station = ctk.CTkLabel(self.result_box, text="Stations on route: N/A", anchor="w")
         self.lbl_station.pack(fill="x")
+
+    def _load_neighbor_boundaries(self):
+        cache_path = Path(self.boundary_cache_file)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if cache_path.exists():
+            try:
+                return gpd.read_file(cache_path)
+            except Exception:
+                pass
+
+        rows = []
+        for place in self.boundary_places:
+            try:
+                gdf = ox.geocode_to_gdf(place)
+                if gdf.empty:
+                    continue
+                row = gdf.iloc[[0]].copy()
+                row["place_name"] = place
+                rows.append(row)
+            except Exception as exc:
+                print(f"Không thể tải ranh giới cho {place}: {exc}")
+
+        if not rows:
+            return gpd.GeoDataFrame()
+
+        merged = gpd.GeoDataFrame(
+            pd.concat(rows, ignore_index=True),
+            geometry="geometry",
+            crs=rows[0].crs,
+        )
+
+        try:
+            merged.to_file(cache_path, driver="GeoJSON")
+        except Exception as exc:
+            print(f"Không thể lưu cache ranh giới: {exc}")
+
+        return merged
+
+    def _geometry_to_boundary_paths(self, geometry):
+        paths = []
+        if geometry is None or geometry.is_empty:
+            return paths
+
+        if geometry.geom_type == "Polygon":
+            exterior = list(geometry.exterior.coords)
+            if exterior:
+                paths.append([(lat, lon) for lon, lat in exterior])
+            return paths
+
+        if geometry.geom_type == "MultiPolygon":
+            for polygon in geometry.geoms:
+                exterior = list(polygon.exterior.coords)
+                if exterior:
+                    paths.append([(lat, lon) for lon, lat in exterior])
+            return paths
+
+        return paths
+
+    def _draw_neighbor_boundaries(self):
+        gdf = self._load_neighbor_boundaries()
+        if gdf.empty:
+            print("Không có dữ liệu ranh giới để hiển thị.")
+            return
+
+        for line in self.boundary_lines:
+            line.delete()
+        self.boundary_lines = []
+
+        for _, row in gdf.iterrows():
+            geometry = row.get("geometry")
+            paths = self._geometry_to_boundary_paths(geometry)
+            for coords in paths:
+                line = self.map_widget.set_path(coords, color="#2e7d32", width=2)
+                self.boundary_lines.append(line)
+
+    def _edge_coords(self, u, v):
+        """Return edge polyline coords as (lat, lon), following actual road geometry when available."""
+        edge_data = self.G.get_edge_data(u, v)
+        if not edge_data:
+            return [(self.G.nodes[u]["y"], self.G.nodes[u]["x"]), (self.G.nodes[v]["y"], self.G.nodes[v]["x"])]
+
+        if "length" in edge_data:
+            attrs = edge_data
+        else:
+            attrs = min(edge_data.values(), key=lambda item: float(item.get("length", 1.0)))
+
+        geometry = attrs.get("geometry")
+        if geometry is not None:
+            coords = [(lat, lon) for lon, lat in geometry.coords]
+            if len(coords) >= 2:
+                u_lat, u_lon = self.G.nodes[u]["y"], self.G.nodes[u]["x"]
+                first = coords[0]
+                last = coords[-1]
+                d_first = (first[0] - u_lat) ** 2 + (first[1] - u_lon) ** 2
+                d_last = (last[0] - u_lat) ** 2 + (last[1] - u_lon) ** 2
+                if d_last < d_first:
+                    coords.reverse()
+                return coords
+
+        return [(self.G.nodes[u]["y"], self.G.nodes[u]["x"]), (self.G.nodes[v]["y"], self.G.nodes[v]["x"])]
+
+    def _path_to_map_coords(self, path):
+        """Expand node path into a drawable road polyline using edge geometries."""
+        if len(path) < 2:
+            return [(self.G.nodes[n]["y"], self.G.nodes[n]["x"]) for n in path]
+
+        route_coords = []
+        for idx in range(len(path) - 1):
+            u = path[idx]
+            v = path[idx + 1]
+            segment = self._edge_coords(u, v)
+
+            if not segment:
+                continue
+
+            if route_coords and route_coords[-1] == segment[0]:
+                route_coords.extend(segment[1:])
+            else:
+                route_coords.extend(segment)
+
+        return route_coords
 
     def _load_city_graph(self):
         cache_path = Path(self.graph_cache_file)
@@ -171,8 +312,8 @@ class MunichNavigationApp(ctk.CTk):
                 marker.delete()
             self.station_markers = []
 
-            # Ve duong bo tong the
-            path_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in path]
+            # Ve duong bo tong the theo hinh hoc duong thuc te
+            path_coords = self._path_to_map_coords(path)
             self.path_line = self.map_widget.set_path(path_coords, color="#1f77b4", width=5)
 
             # Danh dau tat ca ga nam tren tuyen
@@ -198,7 +339,7 @@ class MunichNavigationApp(ctk.CTk):
                     if right <= left:
                         continue
                     station_segment = path[left:right + 1]
-                    segment_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in station_segment]
+                    segment_coords = self._path_to_map_coords(station_segment)
                     line = self.map_widget.set_path(segment_coords, color="#ff6f00", width=7)
                     self.station_path_lines.append(line)
 
