@@ -297,6 +297,7 @@ def find_route_via_ubahn(
         )
         if not road_to_entry:
             continue
+        entry_transfer = float(entry.get("transfer_total_m", 0.0))
 
         for exit_station in exit_candidates:
             if entry["rail_node"] == exit_station["rail_node"]:
@@ -320,7 +321,9 @@ def find_route_via_ubahn(
             if not road_from_exit:
                 continue
 
-            total_dist = road_to_entry_dist + rail_dist + road_from_exit_dist
+            exit_transfer = float(exit_station.get("transfer_total_m", 0.0))
+
+            total_dist = road_to_entry_dist + entry_transfer + rail_dist + exit_transfer + road_from_exit_dist
             total_expanded = road_to_entry_expanded + rail_expanded + road_from_exit_expanded
 
             if total_dist < best_total:

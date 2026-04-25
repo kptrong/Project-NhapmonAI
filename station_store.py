@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from typing import List
 
@@ -17,6 +18,19 @@ def _distance_sq(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> floa
     dlat = lat_a - lat_b
     dlon = lon_a - lon_b
     return dlat * dlat + dlon * dlon
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    lat1_r = math.radians(lat1)
+    lon1_r = math.radians(lon1)
+    lat2_r = math.radians(lat2)
+    lon2_r = math.radians(lon2)
+
+    dlat = lat2_r - lat1_r
+    dlon = lon2_r - lon1_r
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return 6371000 * c
 
 
 def fetch_station_nodes(graph, center_lat: float, center_lon: float, dist: int) -> List[int]:
@@ -67,6 +81,8 @@ def fetch_station_mappings_for_place(road_graph, rail_graph, place_name: str) ->
 
     station_mappings = []
     dedup = set()
+    max_road_transfer_m = 250.0
+    max_rail_transfer_m = 250.0
 
     for _, row in features.iterrows():
         geometry = row.get("geometry")
@@ -81,10 +97,17 @@ def fetch_station_mappings_for_place(road_graph, rail_graph, place_name: str) ->
         except Exception:
             continue
 
+        road_lat = float(road_graph.nodes[road_node]["y"])
+        road_lon = float(road_graph.nodes[road_node]["x"])
         rail_lat = float(rail_graph.nodes[rail_node]["y"])
         rail_lon = float(rail_graph.nodes[rail_node]["x"])
-        # Filter out stations that are too far from nearest rail edge/node.
-        if _distance_sq(lat, lon, rail_lat, rail_lon) > 0.000009:
+
+        road_transfer_m = _haversine_m(lat, lon, road_lat, road_lon)
+        rail_transfer_m = _haversine_m(lat, lon, rail_lat, rail_lon)
+        transfer_total_m = road_transfer_m + rail_transfer_m
+
+        # Keep only stations with reasonable transfer continuity.
+        if road_transfer_m > max_road_transfer_m or rail_transfer_m > max_rail_transfer_m:
             continue
 
         key = (road_node, rail_node)
@@ -99,6 +122,9 @@ def fetch_station_mappings_for_place(road_graph, rail_graph, place_name: str) ->
                 "lon": float(lon),
                 "road_node": road_node,
                 "rail_node": rail_node,
+                "road_transfer_m": road_transfer_m,
+                "rail_transfer_m": rail_transfer_m,
+                "transfer_total_m": transfer_total_m,
             }
         )
 
@@ -149,6 +175,9 @@ def load_station_mappings(file_path: str) -> List[dict]:
                     "lon": float(item["lon"]),
                     "road_node": int(item["road_node"]),
                     "rail_node": int(item["rail_node"]),
+                    "road_transfer_m": float(item.get("road_transfer_m", -1.0)),
+                    "rail_transfer_m": float(item.get("rail_transfer_m", -1.0)),
+                    "transfer_total_m": float(item.get("transfer_total_m", -1.0)),
                 }
             )
         return result

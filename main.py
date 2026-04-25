@@ -61,7 +61,11 @@ class MunichNavigationApp(ctk.CTk):
 
         print("Dang dong bo mapping ga duong bo <-> ga U-Bahn...")
         self.station_mappings = load_station_mappings(self.station_mapping_cache_file)
-        if not self.station_mappings:
+        needs_refresh = (not self.station_mappings) or any(
+            mapping.get("transfer_total_m", -1.0) < 0
+            for mapping in self.station_mappings
+        )
+        if needs_refresh:
             self.station_mappings = fetch_station_mappings_for_place(self.G, self.rail_graph, self.place_name)
             save_station_mappings(self.station_mappings, self.station_mapping_cache_file)
         print(f"Da nap {len(self.station_mappings)} mapping ga U-Bahn.")
@@ -285,6 +289,39 @@ class MunichNavigationApp(ctk.CTk):
                 # Ve doan U-Bahn tren ray co dinh
                 rail_coords = self._path_to_coords(rail_path, graph=self.rail_graph)
                 self.rail_path_line = self.map_widget.set_path(rail_coords, color="#f4b400", width=7)
+
+                # Ve 2 doan connector chuyen tuyen de tranh dut doan hien thi
+                entry_road_coord = (
+                    self.G.nodes[entry_station["road_node"]]["y"],
+                    self.G.nodes[entry_station["road_node"]]["x"],
+                )
+                entry_station_coord = (entry_station["lat"], entry_station["lon"])
+                entry_rail_coord = (
+                    self.rail_graph.nodes[entry_station["rail_node"]]["y"],
+                    self.rail_graph.nodes[entry_station["rail_node"]]["x"],
+                )
+                exit_rail_coord = (
+                    self.rail_graph.nodes[exit_station["rail_node"]]["y"],
+                    self.rail_graph.nodes[exit_station["rail_node"]]["x"],
+                )
+                exit_station_coord = (exit_station["lat"], exit_station["lon"])
+                exit_road_coord = (
+                    self.G.nodes[exit_station["road_node"]]["y"],
+                    self.G.nodes[exit_station["road_node"]]["x"],
+                )
+
+                transfer_line_1 = self.map_widget.set_path(
+                    [entry_road_coord, entry_station_coord, entry_rail_coord],
+                    color="#6c757d",
+                    width=4,
+                )
+                transfer_line_2 = self.map_widget.set_path(
+                    [exit_rail_coord, exit_station_coord, exit_road_coord],
+                    color="#6c757d",
+                    width=4,
+                )
+                self.station_path_lines.append(transfer_line_1)
+                self.station_path_lines.append(transfer_line_2)
 
                 # Danh dau ga vao/ga ra
                 for station in (entry_station, exit_station):
