@@ -215,3 +215,124 @@ def find_route_via_station(
         return [], float("inf"), 0, -1
 
     return best_path, best_distance, best_expanded, best_station
+
+
+def _nearest_station_mappings(
+    graph,
+    node: int,
+    station_mappings: List[dict],
+    key: str,
+    max_candidates: int,
+) -> List[dict]:
+    if not station_mappings:
+        return []
+
+    node_x = graph.nodes[node]["x"]
+    node_y = graph.nodes[node]["y"]
+    scored = []
+    for mapping in station_mappings:
+        station_node = mapping[key]
+        sx = graph.nodes[station_node]["x"]
+        sy = graph.nodes[station_node]["y"]
+        scored.append((math.hypot(node_x - sx, node_y - sy), mapping))
+
+    scored.sort(key=lambda item: item[0])
+    return [mapping for _, mapping in scored[:max_candidates]]
+
+
+def find_route_via_ubahn(
+    road_graph,
+    rail_graph,
+    start: int,
+    end: int,
+    station_mappings: List[dict],
+    algorithm: str,
+    max_station_candidates: int = 8,
+) -> Tuple[List[int], List[int], List[int], float, int, dict, dict]:
+    """
+    Return
+    (
+        road_path_to_entry_station,
+        rail_path_between_stations,
+        road_path_from_exit_station,
+        total_distance_m,
+        expanded_nodes,
+        entry_station_mapping,
+        exit_station_mapping,
+    )
+    where the middle segment is constrained to the U-Bahn rail graph.
+    """
+    if not station_mappings:
+        return [], [], [], float("inf"), 0, {}, {}
+
+    entry_candidates = _nearest_station_mappings(
+        road_graph,
+        start,
+        station_mappings,
+        key="road_node",
+        max_candidates=max_station_candidates,
+    )
+    exit_candidates = _nearest_station_mappings(
+        road_graph,
+        end,
+        station_mappings,
+        key="road_node",
+        max_candidates=max_station_candidates,
+    )
+
+    best_road_1: List[int] = []
+    best_rail: List[int] = []
+    best_road_2: List[int] = []
+    best_total = float("inf")
+    best_expanded = 0
+    best_entry = {}
+    best_exit = {}
+
+    for entry in entry_candidates:
+        road_to_entry, road_to_entry_dist, road_to_entry_expanded = find_route_custom(
+            road_graph,
+            start,
+            entry["road_node"],
+            algorithm,
+        )
+        if not road_to_entry:
+            continue
+
+        for exit_station in exit_candidates:
+            if entry["rail_node"] == exit_station["rail_node"]:
+                continue
+
+            rail_path, rail_dist, rail_expanded = find_route_custom(
+                rail_graph,
+                entry["rail_node"],
+                exit_station["rail_node"],
+                algorithm,
+            )
+            if not rail_path:
+                continue
+
+            road_from_exit, road_from_exit_dist, road_from_exit_expanded = find_route_custom(
+                road_graph,
+                exit_station["road_node"],
+                end,
+                algorithm,
+            )
+            if not road_from_exit:
+                continue
+
+            total_dist = road_to_entry_dist + rail_dist + road_from_exit_dist
+            total_expanded = road_to_entry_expanded + rail_expanded + road_from_exit_expanded
+
+            if total_dist < best_total:
+                best_total = total_dist
+                best_expanded = total_expanded
+                best_road_1 = road_to_entry
+                best_rail = rail_path
+                best_road_2 = road_from_exit
+                best_entry = entry
+                best_exit = exit_station
+
+    if not best_road_1 or not best_rail or not best_road_2:
+        return [], [], [], float("inf"), 0, {}, {}
+
+    return best_road_1, best_rail, best_road_2, best_total, best_expanded, best_entry, best_exit
