@@ -55,6 +55,7 @@ class MunichNavigationApp(ctk.CTk):
         self.map_widget.set_position(self.center_lat, self.center_lon) # Tọa độ Munich
         self.map_widget.set_zoom(15)
         self.map_widget.add_left_click_map_command(self.on_left_click)
+        self._show_all_stations()
 
         
 
@@ -236,7 +237,24 @@ class MunichNavigationApp(ctk.CTk):
         self.lbl_nodes.configure(text="Nodes visited: N/A")
         self.lbl_time.configure(text="Time: N/A")
         self.lbl_station.configure(text="Stations on route: N/A")
+    def _show_all_stations(self):
+        print("Hiển thị tất cả station lên bản đồ...")
 
+        for node in self.station_nodes:
+            if node not in self.G.nodes:
+                continue
+
+            lat = self.G.nodes[node]['y']
+            lon = self.G.nodes[node]['x']
+
+            marker = self.map_widget.set_marker(
+                lat,
+                lon,
+                text="Station",
+                marker_color_circle="#f4b400"
+            )
+
+            self.station_markers.append(marker)
 if __name__ == "__main__":
     app = MunichNavigationApp()
     app.mainloop()

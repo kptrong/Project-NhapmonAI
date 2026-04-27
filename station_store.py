@@ -14,7 +14,7 @@ def _extract_point_coords(geometry):
 
 
 def fetch_station_nodes(graph, center_lat: float, center_lon: float, dist: int) -> List[int]:
-    tags = {"railway": ["station", "halt", "stop"]}
+    tags = {"railway": ["station"]}
     features = ox.features_from_point((center_lat, center_lon), tags=tags, dist=dist)
 
     station_node_set = set()
@@ -32,9 +32,13 @@ def fetch_station_nodes(graph, center_lat: float, center_lon: float, dist: int) 
 
 
 def fetch_station_nodes_for_place(graph, place_name: str) -> List[int]:
-    tags = {"railway": ["station", "halt", "stop"]}
+    tags = {"railway": ["station"]}
     features = ox.features_from_place(place_name, tags=tags)
 
+    features = features[
+        (features.get("station") == "subway") |
+        (features.get("subway") == "yes")
+    ]
     station_node_set = set()
     for _, row in features.iterrows():
         geometry = row.get("geometry")
