@@ -3,24 +3,43 @@ import math
 from typing import Dict, List, Tuple
 
 
-def _edge_length(edge_data: dict) -> float:
-    """Return edge length for both Graph and MultiDiGraph adjacency formats."""
-    if "length" in edge_data:
-        return float(edge_data.get("length", 1.0))
+def _calculate_time(length: float, rail_type) -> float:
+    """Tính thời gian đi bằng giây. Tàu xịn thì tốc độ cao, thời gian ngắn."""
+    speed_mps = 15.0  # Tốc độ mặc định (~54km/h)
+    rail_str = str(rail_type).lower()
+    
+    if "rail" in rail_str:
+        speed_mps = 25.0  # Tàu hỏa liên tỉnh/cao tốc (~90km/h)
+    elif "subway" in rail_str:
+        speed_mps = 15.0  # Tàu điện ngầm (~54km/h)
+    elif "tram" in rail_str:
+        speed_mps = 8.0   # Xe điện mặt đất (~28km/h)
+        
+    return length / speed_mps
 
-    min_length = float("inf")
+def _edge_cost(edge_data: dict) -> float:
+    """Tính 'chi phí' (thời gian đi lại) thay vì khoảng cách."""
+    if "length" in edge_data:
+        length = float(edge_data.get("length", 1.0))
+        rail_type = edge_data.get("railway", "")
+        return _calculate_time(length, rail_type)
+
+    min_time = float("inf")
     for attrs in edge_data.values():
         length = float(attrs.get("length", 1.0))
-        if length < min_length:
-            min_length = length
+        rail_type = attrs.get("railway", "")
+        time_cost = _calculate_time(length, rail_type)
+        if time_cost < min_time:
+            min_time = time_cost
 
-    return min_length if min_length != float("inf") else 1.0
+    return min_time if min_time != float("inf") else 1.0
 
 
 def _neighbors_with_cost(graph, node: int) -> List[Tuple[int, float]]:
     neighbors = []
     for neighbor, edge_data in graph[node].items():
-        neighbors.append((neighbor, _edge_length(edge_data)))
+        # Đã đổi từ _edge_length sang _edge_cost
+        neighbors.append((neighbor, _edge_cost(edge_data)))
     return neighbors
 
 
@@ -90,6 +109,12 @@ def _heuristic_meters(graph, node_a: int, node_b: int) -> float:
     earth_radius_m = 6371000
     return earth_radius_m * c
 
+def _heuristic_cost(graph, node_a: int, node_b: int) -> float:
+    """Quy đổi khoảng cách đường chim bay sang thời gian ước tính."""
+    distance_m = _heuristic_meters(graph, node_a, node_b)
+    
+    # Chia cho tốc độ tối đa (25 m/s) để thuật toán A* không bị đánh giá lố (overestimate)
+    return distance_m / 25.0
 
 def astar_search(graph, start: int, end: int) -> Tuple[List[int], float, int]:
     """Return (path, total_distance_m, expanded_nodes)."""
@@ -98,7 +123,7 @@ def astar_search(graph, start: int, end: int) -> Tuple[List[int], float, int]:
     visited = set()
     expanded_nodes = 0
 
-    start_f_score = _heuristic_meters(graph, start, end)
+    start_f_score = _heuristic_cost(graph, start, end)
     open_set = [(start_f_score, start)]
 
     while open_set:
@@ -120,7 +145,7 @@ def astar_search(graph, start: int, end: int) -> Tuple[List[int], float, int]:
             if tentative_g < g_score.get(neighbor, float("inf")):
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g
-                f_score = tentative_g + _heuristic_meters(graph, neighbor, end)
+                f_score = tentative_g + _heuristic_cost(graph, neighbor, end)
                 heapq.heappush(open_set, (f_score, neighbor))
 
     path = _reconstruct_path(came_from, start, end)
