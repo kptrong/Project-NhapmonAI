@@ -5,8 +5,8 @@ import geopandas as gpd
 import pandas as pd
 from pathlib import Path
 import time
-from algorithms import find_route_via_station
-from station_store import fetch_station_nodes_for_place, load_station_nodes, save_station_nodes
+from algorithms import find_route_multimodal_via_rail
+from station_store import fetch_station_records_for_place, load_station_records, save_station_records
 
 # Cấu hình giao diện
 ctk.set_appearance_mode("System")
@@ -20,7 +20,8 @@ class MunichNavigationApp(ctk.CTk):
         self.place_name = "Munich, Bavaria, Germany"
         self.center_lat = 48.1371
         self.center_lon = 11.5754
-        self.graph_cache_file = "cache/munich_drive.graphml"
+        self.drive_graph_cache_file = "cache/munich_drive.graphml"
+        self.rail_graph_cache_file = "cache/munich_rail.graphml"
         self.station_cache_file = "cache/munich_station_nodes_citywide.json"
         self.boundary_cache_file = "cache/munich_neighbor_boundaries.geojson"
         self.boundary_places = [
@@ -42,21 +43,23 @@ class MunichNavigationApp(ctk.CTk):
         self.end_marker = None
         self.path_line = None
         self.station_path_lines = []
-        self.station_markers = []
-        self.station_nodes = []
+        self.station_markers = []  # Markers for boarding/alighting stations in route
+        self.all_station_markers = []  # Markers for all available stations
+        self.station_records = []
         self.boundary_lines = []
         
         print("Đang tải dữ liệu bản đồ toàn thành phố Munich...")
-        self.G = self._load_city_graph()
-        self._set_map_center_from_graph()
+        self.G_drive = self._load_drive_graph()
+        self.G_rail = self._load_rail_graph()
+        self._set_map_center_from_graph(self.G_drive)
         print("Tải dữ liệu thành công!")
 
         print("Đang tải dữ liệu ga tàu Munich...")
-        self.station_nodes = load_station_nodes(self.station_cache_file)
-        if not self.station_nodes:
-            self.station_nodes = fetch_station_nodes_for_place(self.G, self.place_name)
-            save_station_nodes(self.station_nodes, self.station_cache_file)
-        print(f"Đã nạp {len(self.station_nodes)} ga khả dụng cho tìm đường.")
+        self.station_records = load_station_records(self.station_cache_file)
+        if not self.station_records:
+            self.station_records = fetch_station_records_for_place(self.G_drive, self.G_rail, self.place_name)
+            save_station_records(self.station_records, self.station_cache_file)
+        print(f"Đã nạp {len(self.station_records)} ga khả dụng cho tìm đường.")
 
         # --- LAYOUT ---
         self.grid_columnconfigure(0, weight=1)
@@ -72,6 +75,10 @@ class MunichNavigationApp(ctk.CTk):
         print("Đang tải ranh giới Munich và các thành phố lân cận...")
         self._draw_neighbor_boundaries()
         print("Đã hiển thị ranh giới hành chính.")
+
+        print("Đang hiển thị tất cả các ga tàu...")
+        self._draw_all_stations()
+        print("Đã hiển thị các ga tàu.")
 
         # Chuột phải để chọn điểm
         self.map_widget.add_right_click_menu_command(label="Choose a starting point", command=self.set_start, pass_coords=True)
@@ -166,6 +173,23 @@ class MunichNavigationApp(ctk.CTk):
 
         return paths
 
+    def _draw_all_stations(self):
+        """Display all available train stations on the map."""
+        # Clear previous station markers
+        for marker in self.all_station_markers:
+            marker.delete()
+        self.all_station_markers = []
+
+        # Add marker for each station
+        for station in self.station_records:
+            marker = self.map_widget.set_marker(
+                station["lat"],
+                station["lon"],
+                text=station.get("name", "Station"),
+                marker_color_circle="blue",
+            )
+            self.all_station_markers.append(marker)
+
     def _draw_neighbor_boundaries(self):
         gdf = self._load_neighbor_boundaries()
         if gdf.empty:
@@ -183,11 +207,11 @@ class MunichNavigationApp(ctk.CTk):
                 line = self.map_widget.set_path(coords, color="#2e7d32", width=2)
                 self.boundary_lines.append(line)
 
-    def _edge_coords(self, u, v):
+    def _edge_coords(self, graph, u, v):
         """Return edge polyline coords as (lat, lon), following actual road geometry when available."""
-        edge_data = self.G.get_edge_data(u, v)
+        edge_data = graph.get_edge_data(u, v)
         if not edge_data:
-            return [(self.G.nodes[u]["y"], self.G.nodes[u]["x"]), (self.G.nodes[v]["y"], self.G.nodes[v]["x"])]
+            return [(graph.nodes[u]["y"], graph.nodes[u]["x"]), (graph.nodes[v]["y"], graph.nodes[v]["x"])]
 
         if "length" in edge_data:
             attrs = edge_data
@@ -198,7 +222,7 @@ class MunichNavigationApp(ctk.CTk):
         if geometry is not None:
             coords = [(lat, lon) for lon, lat in geometry.coords]
             if len(coords) >= 2:
-                u_lat, u_lon = self.G.nodes[u]["y"], self.G.nodes[u]["x"]
+                u_lat, u_lon = graph.nodes[u]["y"], graph.nodes[u]["x"]
                 first = coords[0]
                 last = coords[-1]
                 d_first = (first[0] - u_lat) ** 2 + (first[1] - u_lon) ** 2
@@ -207,18 +231,18 @@ class MunichNavigationApp(ctk.CTk):
                     coords.reverse()
                 return coords
 
-        return [(self.G.nodes[u]["y"], self.G.nodes[u]["x"]), (self.G.nodes[v]["y"], self.G.nodes[v]["x"])]
+        return [(graph.nodes[u]["y"], graph.nodes[u]["x"]), (graph.nodes[v]["y"], graph.nodes[v]["x"])]
 
-    def _path_to_map_coords(self, path):
+    def _path_to_map_coords(self, graph, path):
         """Expand node path into a drawable road polyline using edge geometries."""
         if len(path) < 2:
-            return [(self.G.nodes[n]["y"], self.G.nodes[n]["x"]) for n in path]
+            return [(graph.nodes[n]["y"], graph.nodes[n]["x"]) for n in path]
 
         route_coords = []
         for idx in range(len(path) - 1):
             u = path[idx]
             v = path[idx + 1]
-            segment = self._edge_coords(u, v)
+            segment = self._edge_coords(graph, u, v)
 
             if not segment:
                 continue
@@ -230,12 +254,12 @@ class MunichNavigationApp(ctk.CTk):
 
         return route_coords
 
-    def _load_city_graph(self):
-        cache_path = Path(self.graph_cache_file)
+    def _load_drive_graph(self):
+        cache_path = Path(self.drive_graph_cache_file)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         if cache_path.exists():
-            print("Đang đọc graph Munich từ cache local...")
+            print("Đang đọc drive graph Munich từ cache local...")
             return ox.load_graphml(cache_path)
 
         print("Không thấy cache graph, đang tải từ OpenStreetMap...")
@@ -248,32 +272,51 @@ class MunichNavigationApp(ctk.CTk):
         ox.save_graphml(graph, cache_path)
         return graph
 
-    def _set_map_center_from_graph(self):
-        nodes = list(self.G.nodes)
+    def _load_rail_graph(self):
+        cache_path = Path(self.rail_graph_cache_file)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if cache_path.exists():
+            print("Đang đọc rail graph Munich từ cache local...")
+            return ox.load_graphml(cache_path)
+
+        print("Không thấy cache rail graph, đang tải từ OpenStreetMap...")
+        graph = ox.graph_from_place(
+            self.place_name,
+            network_type="all",
+            custom_filter='["railway"="subway"]',
+            simplify=True,
+            retain_all=True,
+        )
+        ox.save_graphml(graph, cache_path)
+        return graph
+
+    def _set_map_center_from_graph(self, graph):
+        nodes = list(graph.nodes)
         if not nodes:
             return
 
         sample = nodes[: min(3000, len(nodes))]
-        lat_avg = sum(self.G.nodes[n]["y"] for n in sample) / len(sample)
-        lon_avg = sum(self.G.nodes[n]["x"] for n in sample) / len(sample)
+        lat_avg = sum(graph.nodes[n]["y"] for n in sample) / len(sample)
+        lon_avg = sum(graph.nodes[n]["x"] for n in sample) / len(sample)
         self.center_lat = lat_avg
         self.center_lon = lon_avg
 
     def set_start(self, coords):
         if self.start_marker: self.start_marker.delete()
-        self.start_node = ox.nearest_nodes(self.G, coords[1], coords[0])
+        self.start_node = ox.nearest_nodes(self.G_drive, coords[1], coords[0])
         self.start_marker = self.map_widget.set_marker(coords[0], coords[1], text="Start", marker_color_circle="green")
 
     def set_end(self, coords):
         if self.end_marker: self.end_marker.delete()
-        self.end_node = ox.nearest_nodes(self.G, coords[1], coords[0])
+        self.end_node = ox.nearest_nodes(self.G_drive, coords[1], coords[0])
         self.end_marker = self.map_widget.set_marker(coords[0], coords[1], text="End", marker_color_circle="red")
 
     def find_route(self):
         if self.start_node is None or self.end_node is None:
             print("Please select both start and end points!")
             return
-        if not self.station_nodes:
+        if not self.station_records:
             print("No train station data available in current map area.")
             return
 
@@ -281,27 +324,31 @@ class MunichNavigationApp(ctk.CTk):
         start_time = time.time()
 
         try:
-            path, distance, visited_nodes, station_node = find_route_via_station(
-                self.G,
+            result = find_route_multimodal_via_rail(
+                self.G_drive,
+                self.G_rail,
                 self.start_node,
                 self.end_node,
-                self.station_nodes,
+                self.station_records,
                 algo,
             )
-            if not path:
-                raise ValueError("No path found that can pass through a train station")
+            if not result:
+                raise ValueError("No valid multimodal route found (drive + rail + drive)")
 
             end_time = time.time()
+            distance = result["distance_m"]
+            visited_nodes = result["expanded_nodes"]
+            board = result["boarding_station"]
+            alight = result["alighting_station"]
+            drive_start_path = result["drive_start_path"]
+            rail_path = result["rail_path"]
+            drive_end_path = result["drive_end_path"]
             
             # Cập nhật UI
             self.lbl_dist.configure(text=f"Distance: {distance/1000:.2f} km")
             self.lbl_time.configure(text=f"Time: {(end_time - start_time)*1000:.2f} ms")
             self.lbl_nodes.configure(text=f"Nodes visited: {visited_nodes}")
-            station_set = set(self.station_nodes)
-            passed_station_nodes = [node for node in path if node in station_set]
-            if station_node not in passed_station_nodes:
-                passed_station_nodes.append(station_node)
-            self.lbl_station.configure(text=f"Stations on route: {len(passed_station_nodes)}")
+            self.lbl_station.configure(text="Stations on route: 2 (boarding + alighting)")
 
             # Xoa ket qua cu
             if self.path_line: self.path_line.delete()
@@ -312,36 +359,29 @@ class MunichNavigationApp(ctk.CTk):
                 marker.delete()
             self.station_markers = []
 
-            # Ve duong bo tong the theo hinh hoc duong thuc te
-            path_coords = self._path_to_map_coords(path)
-            self.path_line = self.map_widget.set_path(path_coords, color="#1f77b4", width=5)
+            # Ve 3 chang: duong bo -> duong tau -> duong bo
+            start_coords = self._path_to_map_coords(self.G_drive, drive_start_path)
+            rail_coords = self._path_to_map_coords(self.G_rail, rail_path)
+            end_coords = self._path_to_map_coords(self.G_drive, drive_end_path)
 
-            # Danh dau tat ca ga nam tren tuyen
-            station_indices = []
-            for idx, node in enumerate(path):
-                if node in station_set:
-                    station_indices.append(idx)
-                    station_lat = self.G.nodes[node]['y']
-                    station_lon = self.G.nodes[node]['x']
-                    marker = self.map_widget.set_marker(
-                        station_lat,
-                        station_lon,
-                        text="Station",
-                        marker_color_circle="#f4b400",
-                    )
-                    self.station_markers.append(marker)
+            line1 = self.map_widget.set_path(start_coords, color="#1f77b4", width=5)
+            line2 = self.map_widget.set_path(rail_coords, color="#ff6f00", width=7)
+            line3 = self.map_widget.set_path(end_coords, color="#1f77b4", width=5)
+            self.station_path_lines.extend([line1, line2, line3])
 
-            # Ve doan duong di qua ga voi mau khac (cam)
-            if len(station_indices) >= 2:
-                for i in range(len(station_indices) - 1):
-                    left = station_indices[i]
-                    right = station_indices[i + 1]
-                    if right <= left:
-                        continue
-                    station_segment = path[left:right + 1]
-                    segment_coords = self._path_to_map_coords(station_segment)
-                    line = self.map_widget.set_path(segment_coords, color="#ff6f00", width=7)
-                    self.station_path_lines.append(line)
+            board_marker = self.map_widget.set_marker(
+                board["lat"],
+                board["lon"],
+                text="Boarding Station",
+                marker_color_circle="#f4b400",
+            )
+            alight_marker = self.map_widget.set_marker(
+                alight["lat"],
+                alight["lon"],
+                text="Alighting Station",
+                marker_color_circle="#fbbc04",
+            )
+            self.station_markers.extend([board_marker, alight_marker])
 
         except Exception as e:
             print(f"Cannot find route: {e}")
@@ -361,6 +401,8 @@ class MunichNavigationApp(ctk.CTk):
         self.lbl_nodes.configure(text="Nodes visited: N/A")
         self.lbl_time.configure(text="Time: N/A")
         self.lbl_station.configure(text="Stations on route: N/A")
+        # Redraw all station markers
+        self._draw_all_stations()
 
 if __name__ == "__main__":
     app = MunichNavigationApp()
