@@ -24,10 +24,10 @@ def main():
     ox.save_graphml(graph, GRAPH_CACHE_FILE)
     print(f"Saved graph cache: {GRAPH_CACHE_FILE}")
 
-    print("Loading Munich train stations...")
+    print("Loading Munich U-Bahn stations...")
     station_nodes = fetch_station_nodes_for_place(graph, PLACE_NAME)
     save_station_nodes(station_nodes, STATION_CACHE_FILE)
-    print(f"Saved station cache: {STATION_CACHE_FILE} ({len(station_nodes)} stations)")
+    print(f"Saved station cache: {STATION_CACHE_FILE} ({len(station_nodes)} U-Bahn stations)")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from tkintermapview import TkinterMapView
 import osmnx as ox
 from pathlib import Path
 import time
-from algorithms import find_route_via_station
+from algorithms import find_route_via_station, find_route_via_subway_pair
 from station_store import fetch_station_nodes_for_place, load_station_nodes, save_station_nodes
 
 # Cấu hình giao diện
@@ -28,7 +28,11 @@ class MunichNavigationApp(ctk.CTk):
         self.end_marker = None
         self.path_line = None
         self.station_path_lines = []
-        self.station_markers = []
+        self.station_markers = {}
+        self.route_station_markers = []
+        self.route_lines = []
+        self.route_markers = []
+        self.path_lines = []
         self.station_nodes = []
         self.click_mode = 0  # 0: chọn start, 1: chọn end
         
@@ -37,12 +41,12 @@ class MunichNavigationApp(ctk.CTk):
         self._set_map_center_from_graph()
         print("Tải dữ liệu thành công!")
 
-        print("Đang tải dữ liệu ga tàu Munich...")
+        print("Đang tải dữ liệu U-Bahn Munich...")
         self.station_nodes = load_station_nodes(self.station_cache_file)
         if not self.station_nodes:
             self.station_nodes = fetch_station_nodes_for_place(self.G, self.place_name)
             save_station_nodes(self.station_nodes, self.station_cache_file)
-        print(f"Đã nạp {len(self.station_nodes)} ga khả dụng cho tìm đường.")
+        print(f"Đã nạp {len(self.station_nodes)} U-Bahn nodes khả dụng cho tìm đường.")
 
         # --- LAYOUT ---
         self.grid_columnconfigure(0, weight=1)
@@ -71,7 +75,7 @@ class MunichNavigationApp(ctk.CTk):
         self.algo_menu = ctk.CTkOptionMenu(self.sidebar, values=["A*", "Dijkstra"])
         self.algo_menu.pack(pady=10)
 
-        self.btn_search = ctk.CTkButton(self.sidebar, text="Find Route", command=self.find_route, fg_color="#3b8ed0")
+        self.btn_search = ctk.CTkButton(self.sidebar, text="Find Route via U-Bahn", command=self.find_route, fg_color="#3b8ed0")
         self.btn_search.pack(pady=10)
 
         self.btn_clear = ctk.CTkButton(self.sidebar, text="Clear Selection", command=self.clear_map, fg_color="#db4437")
@@ -134,74 +138,60 @@ class MunichNavigationApp(ctk.CTk):
             print("Please select both start and end points!")
             return
         if not self.station_nodes:
-            print("No train station data available in current map area.")
+            print("No U-Bahn station data available in current map area.")
             return
 
         algo = self.algo_menu.get()
         start_time = time.time()
 
         try:
-            path, distance, visited_nodes, station_node = find_route_via_station(
+            path_to_entry, path_from_exit, entry_station, exit_station, distance, visited_nodes, subway_leg = find_route_via_subway_pair(
                 self.G,
                 self.start_node,
                 self.end_node,
                 self.station_nodes,
                 algo,
             )
-            if not path:
-                raise ValueError("No path found that can pass through a train station")
+            if not path_to_entry and not path_from_exit:
+                raise ValueError("No drive + U-Bahn route found")
 
             end_time = time.time()
-            
-            # Cập nhật UI
             self.lbl_dist.configure(text=f"Distance: {distance/1000:.2f} km")
             self.lbl_time.configure(text=f"Time: {(end_time - start_time)*1000:.2f} ms")
             self.lbl_nodes.configure(text=f"Nodes visited: {visited_nodes}")
-            station_set = set(self.station_nodes)
-            passed_station_nodes = [node for node in path if node in station_set]
-            if station_node not in passed_station_nodes:
-                passed_station_nodes.append(station_node)
-            self.lbl_station.configure(text=f"Stations on route: {len(passed_station_nodes)}")
+            self.lbl_station.configure(text=f"U-Bahn entry: {entry_station}, exit: {exit_station}")
 
             # Xoa ket qua cu
             if self.path_line: self.path_line.delete()
             for line in self.station_path_lines:
                 line.delete()
             self.station_path_lines = []
-            for marker in self.station_markers:
+            for line in self.route_lines:
+                line.delete()
+            self.route_lines = []
+            for marker in self.route_markers:
                 marker.delete()
-            self.station_markers = []
+            self.route_markers = []
 
-            # Ve duong bo tong the
-            path_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in path]
-            self.path_line = self.map_widget.set_path(path_coords, color="#1f77b4", width=5)
+            if path_to_entry:
+                path_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in path_to_entry]
+                line = self.map_widget.set_path(path_coords, color="#1f77b4", width=5)
+                self.route_lines.append(line)
+            if path_from_exit:
+                path_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in path_from_exit]
+                line = self.map_widget.set_path(path_coords, color="#1f77b4", width=5)
+                self.route_lines.append(line)
 
-            # Danh dau tat ca ga nam tren tuyen
-            station_indices = []
-            for idx, node in enumerate(path):
-                if node in station_set:
-                    station_indices.append(idx)
-                    station_lat = self.G.nodes[node]['y']
-                    station_lon = self.G.nodes[node]['x']
-                    marker = self.map_widget.set_marker(
-                        station_lat,
-                        station_lon,
-                        text="Station",
-                        marker_color_circle="#f4b400",
-                    )
-                    self.station_markers.append(marker)
+            if entry_station != -1 and exit_station != -1:
+                entry_coord = (self.G.nodes[entry_station]['y'], self.G.nodes[entry_station]['x'])
+                exit_coord = (self.G.nodes[exit_station]['y'], self.G.nodes[exit_station]['x'])
+                if entry_station != exit_station:
+                    subway_line = self.map_widget.set_path([entry_coord, exit_coord], color="#ff6f00", width=5)
+                    self.route_lines.append(subway_line)
 
-            # Ve doan duong di qua ga voi mau khac (cam)
-            if len(station_indices) >= 2:
-                for i in range(len(station_indices) - 1):
-                    left = station_indices[i]
-                    right = station_indices[i + 1]
-                    if right <= left:
-                        continue
-                    station_segment = path[left:right + 1]
-                    segment_coords = [(self.G.nodes[n]['y'], self.G.nodes[n]['x']) for n in station_segment]
-                    line = self.map_widget.set_path(segment_coords, color="#ff6f00", width=7)
-                    self.station_path_lines.append(line)
+                entry_marker = self.map_widget.set_marker(entry_coord[0], entry_coord[1], text="Entry", marker_color_circle="#8e44ad")
+                exit_marker = self.map_widget.set_marker(exit_coord[0], exit_coord[1], text="Exit", marker_color_circle="#8e44ad")
+                self.route_markers.extend([entry_marker, exit_marker])
 
         except Exception as e:
             print(f"Cannot find route: {e}")
@@ -228,9 +218,15 @@ class MunichNavigationApp(ctk.CTk):
         for line in self.station_path_lines:
             line.delete()
         self.station_path_lines = []
-        for marker in self.station_markers:
+        for line in self.route_lines:
+            line.delete()
+        self.route_lines = []
+        for marker in self.route_station_markers:
             marker.delete()
-        self.station_markers = []
+        self.route_station_markers = []
+        for marker in self.route_markers:
+            marker.delete()
+        self.route_markers = []
         self.start_node = self.end_node = None
         self.click_mode = 0
         self.lbl_dist.configure(text="Distance: N/A")
@@ -250,11 +246,12 @@ class MunichNavigationApp(ctk.CTk):
             marker = self.map_widget.set_marker(
                 lat,
                 lon,
-                text="Station",
-                marker_color_circle="#f4b400"
+                text="",  
+                marker_color_circle="#ffffff",     # trắng
+                marker_color_outside="#aaaaaa"     # viền xám nhạt
             )
 
-            self.station_markers.append(marker)
+            self.station_markers[node] = marker
 if __name__ == "__main__":
     app = MunichNavigationApp()
     app.mainloop()

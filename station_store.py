@@ -32,17 +32,20 @@ def fetch_station_nodes(graph, center_lat: float, center_lon: float, dist: int) 
 
 
 def fetch_station_nodes_for_place(graph, place_name: str) -> List[int]:
-    tags = {"railway": ["station"]}
+    tags = {
+        "railway": ["station", "stop"],
+        "public_transport": ["station", "stop_position"],
+        "subway": ["yes"],
+    }
     features = ox.features_from_place(place_name, tags=tags)
 
-    features = features[
-        (features.get("station") == "subway") |
-        (features.get("subway") == "yes")
-    ]
     station_node_set = set()
     for _, row in features.iterrows():
         geometry = row.get("geometry")
         if geometry is None or geometry.is_empty:
+            continue
+
+        if row.get("subway") != "yes" and row.get("station") != "subway":
             continue
 
         lat, lon = _extract_point_coords(geometry)

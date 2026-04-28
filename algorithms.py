@@ -166,6 +166,78 @@ def _select_station_candidates(
 
     return [station for _, station in scored[:max_candidates]]
 
+def _select_nearest_stations(
+    graph,
+    node: int,
+    station_nodes: List[int],
+    max_candidates: int = 8,
+) -> List[int]:
+    scored = []
+    for station in station_nodes:
+        scored.append((_heuristic_meters(graph, node, station), station))
+    scored.sort(key=lambda x: x[0])
+    return [station for _, station in scored[:max_candidates]]
+
+def find_route_via_subway_pair(
+    graph,
+    start: int,
+    end: int,
+    station_nodes: List[int],
+    algorithm: str,
+    max_start_candidates: int = 6,
+    max_end_candidates: int = 6,
+) -> Tuple[List[int], List[int], int, int, float, int, float]:
+    """
+    Return (path_to_entry, path_from_exit, entry_station, exit_station,
+    total_distance_m, expanded_nodes, subway_leg_m)
+    """
+    if not station_nodes:
+        return [], [], -1, -1, float("inf"), 0, 0.0
+
+    start_candidates = _select_nearest_stations(graph, start, station_nodes, max_start_candidates)
+    end_candidates = _select_nearest_stations(graph, end, station_nodes, max_end_candidates)
+
+    best_path_to_entry: List[int] = []
+    best_path_from_exit: List[int] = []
+    best_entry = -1
+    best_exit = -1
+    best_distance = float("inf")
+    best_expanded = 0
+    best_subway_leg = 0.0
+
+    for entry_station in start_candidates:
+        entry_path, entry_dist, entry_expanded = find_route_custom(graph, start, entry_station, algorithm)
+        if not entry_path:
+            continue
+
+        for exit_station in end_candidates:
+            exit_path, exit_dist, exit_expanded = find_route_custom(graph, exit_station, end, algorithm)
+            if not exit_path:
+                continue
+
+            subway_leg = _heuristic_meters(graph, entry_station, exit_station)
+            total_distance = entry_dist + exit_dist + subway_leg
+            total_expanded = entry_expanded + exit_expanded
+
+            if total_distance < best_distance:
+                best_distance = total_distance
+                best_expanded = total_expanded
+                best_path_to_entry = entry_path
+                best_path_from_exit = exit_path
+                best_entry = entry_station
+                best_exit = exit_station
+                best_subway_leg = subway_leg
+
+    return (
+        best_path_to_entry,
+        best_path_from_exit,
+        best_entry,
+        best_exit,
+        best_distance,
+        best_expanded,
+        best_subway_leg,
+    )
+
 def find_route_via_station(
     graph,
     start: int,
